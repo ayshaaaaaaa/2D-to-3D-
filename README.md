@@ -56,7 +56,7 @@ pip install rembg
 ### Command Line
 
 ```bash
-python 2D_to_3D_Converter.py path/to/image.png --thickness 0.5 --scale 2.0
+python ultimate_3d_generator.py path/to/image.png --thickness 0.5 --scale 2.0
 ```
 
 ### Parameters
@@ -240,6 +240,10 @@ A powerful Python-based system that converts **any 2D image into a true solid 3D
 
 * ✅ Automatically opens in **Windows 3D Viewer** after generation for instant preview
 
+* ✅ Sample input image **triangle.JPG** is included with this repository for testing and demonstration
+
+* ✅ Automatically opens in **Windows 3D Viewer** after generation for instant preview
+
 - A solid 3D model in `.glb` format
 - Correct depth extrusion
 - Accurate object color preserved
@@ -321,6 +325,35 @@ So we cap at 5000 to:
 * Maintain performance ✅
 * Preserve shape detail ✅
 * Avoid crashes & memory spikes ✅
+
+---
+
+## 🖼 Sample Input & Output
+
+### 📥 Sample Input Image (2D)
+
+> The repository includes a ready-to-use sample image:
+
+**triangle.JPG**
+
+⬇️ Place your input image preview here:
+
+```
+<img width="344" height="274" alt="image" src="https://github.com/user-attachments/assets/fbcde476-9a7c-49ee-aa7b-89ca937bb62a" />
+```
+
+---
+
+### 📤 Generated 3D Output
+
+After running the tool, the extruded 3D model will be generated and opened automatically in Windows 3D Viewer.
+
+⬇️ Place your 3D model preview screenshot here:
+
+```
+<img width="338" height="308" alt="image" src="https://github.com/user-attachments/assets/b7237a5d-d279-4c62-b793-7ffca81d9cd4" />
+
+```
 
 ---
 
