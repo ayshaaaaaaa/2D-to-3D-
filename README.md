@@ -56,7 +56,7 @@ pip install rembg
 ### Command Line
 
 ```bash
-python ultimate_3d_generator.py path/to/image.png --thickness 0.5 --scale 2.0
+python 2D_to_3D_Converter.py path/to/image.png --thickness 0.5 --scale 2.0
 ```
 
 ### Parameters
@@ -238,10 +238,12 @@ A powerful Python-based system that converts **any 2D image into a true solid 3D
 
 ## 📦 Output
 
-* A solid 3D model in `.glb` format
-* Correct depth extrusion
-* Accurate object color preserved
-* Automatically centered in 3D space
+* ✅ Automatically opens in **Windows 3D Viewer** after generation for instant preview
+
+- A solid 3D model in `.glb` format
+- Correct depth extrusion
+- Accurate object color preserved
+- Automatically centered in 3D space
 
 ---
 
