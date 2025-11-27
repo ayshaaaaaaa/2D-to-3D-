@@ -328,35 +328,6 @@ So we cap at 5000 to:
 
 ---
 
-## 🖼 Sample Input & Output
-
-### 📥 Sample Input Image (2D)
-
-> The repository includes a ready-to-use sample image:
-
-**triangle.JPG**
-
-⬇️ Place your input image preview here:
-
-```
-<img width="344" height="274" alt="image" src="https://github.com/user-attachments/assets/fbcde476-9a7c-49ee-aa7b-89ca937bb62a" />
-```
-
----
-
-### 📤 Generated 3D Output
-
-After running the tool, the extruded 3D model will be generated and opened automatically in Windows 3D Viewer.
-
-⬇️ Place your 3D model preview screenshot here:
-
-```
-<img width="338" height="308" alt="image" src="https://github.com/user-attachments/assets/b7237a5d-d279-4c62-b793-7ffca81d9cd4" />
-
-```
-
----
-
 ## 📂 Example Workflow
 
 1. Input image: logo.png
