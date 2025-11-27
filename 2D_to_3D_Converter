@@ -1,0 +1,461 @@
+"""
+PROPER 2D TO 3D EXTRUSION - CREATES REAL SOLID 3D SHAPES
+→ Takes ANY 2D shape (triangle, circle, logo, etc)
+→ Extrudes it into a true 3D solid object
+→ SHARP POINTY CORNERS - no rounding
+→ DYNAMIC - works for all colors and shapes
+→ No gaps, no hollow frames, just solid geometry
+"""
+
+
+import numpy as np
+import trimesh #mesh creation
+from PIL import Image #image loading + convert to RGBA
+import cv2
+from pathlib import Path
+from scipy.spatial import Delaunay #Foe interioir meshing
+
+
+try:
+    from rembg import remove
+    REMBG = True
+except ImportError:
+    REMBG = False
+
+
+#MASK IS TEH OBJECT ONLY - DYNAMIC DETECTION
+def detect_object_mask(arr, use_rembg=REMBG):
+    """
+    Dynamically detect object mask regardless of color.
+    Works for any shape on any background.
+    """
+    h, w = arr.shape[:2]
+    
+    if use_rembg:
+        try:
+            pil = Image.fromarray(arr)
+            result = remove(pil)
+            result = np.array(result)
+            mask = (result[:, :, 3] > 100).astype(np.uint8) * 255
+            rgb = result[:, :, :3]
+            print("✓ Using AI background removal")
+            return mask, rgb
+        except Exception as e:
+            print(f"⚠️ rembg failed: {e}, using adaptive threshold")
+    
+    # Convert to grayscale
+    if arr.shape[2] == 4:
+        
+        # A mask is usually a black-and-white image showing what to keep.
+        # "alpha > 127" means:
+        # Keep pixels with alpha > 127 (more opaque)
+        # Ignore pixels with alpha ≤ 127 (more transparent)
+
+        # Alpha is PERFECT when available
+        # Because the designer/exporter already told you what the foreground is.
+
+        # Use alpha if available
+        alpha = arr[:, :, 3]
+        if alpha.max() > 10 and alpha.min() < 245:
+            mask = (alpha > 127).astype(np.uint8) * 255
+            rgb = arr[:, :, :3]
+            print("✓ Using alpha channel")
+            return mask, rgb
+        gray = cv2.cvtColor(arr[:, :, :3], cv2.COLOR_RGB2GRAY)
+        rgb = arr[:, :, :3]
+    else:
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        rgb = arr
+    
+    # Try multiple threshold methods and pick best
+    methods = []
+    
+    # OTSU tries to find the best grayscale threshold automatically.
+    #pRDICTS TEH THRESHOLD ADN APPLIES IT (fids teh differentiating factor)
+    # Method 1: OTSU
+    _, thresh1 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    methods.append(('OTSU', thresh1))
+    
+    # Method 2: OTSU inverted
+    methods.append(('OTSU_INV', 255 - thresh1))
+    
+    # Method 3: Adaptive threshold
+    thresh2 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                     cv2.THRESH_BINARY, 21, 2)
+    methods.append(('ADAPTIVE', thresh2))
+    
+    # Method 4: Adaptive inverted
+    methods.append(('ADAPTIVE_INV', 255 - thresh2))
+    
+    # Method 5: Simple threshold at midpoint
+    mid_val = np.median(gray)
+    _, thresh3 = cv2.threshold(gray, mid_val, 255, cv2.THRESH_BINARY)
+    methods.append(('MEDIAN', thresh3))
+    methods.append(('MEDIAN_INV', 255 - thresh3))
+    
+    # Pick the method that gives object in center (not edges)
+    best_mask = None
+    best_score = -999999
+    best_name = None
+    
+    # Heuristic: pick the mask that is likely the object
+    for name, mask_candidate in methods:
+        # Check if object is centered (not mostly on edges)
+        center_h, center_w = h // 2, w // 2
+        margin = min(h, w) // 4
+        
+        center_region = mask_candidate[center_h-margin:center_h+margin, 
+                                       center_w-margin:center_w+margin]
+        edge_pixels = np.sum(mask_candidate[:5, :]) + np.sum(mask_candidate[-5:, :]) + \
+                      np.sum(mask_candidate[:, :5]) + np.sum(mask_candidate[:, -5:])
+        center_pixels = np.sum(center_region > 0)
+        
+        # Score: high center coverage, low edge coverage
+        score = center_pixels - edge_pixels * 0.5
+        
+        if score > best_score:
+            best_score = score
+            best_mask = mask_candidate
+            best_name = name
+    
+    # Fallback if no good mask found
+    
+#     methods = list of tuples: (method_name, mask_image)
+# np.sum(x[1] > 0) = count of how many pixels are "foreground"
+# max(...) = selects the method with largest number of foreground pixels
+    if best_mask is None or best_score < 0:
+        print("⚠️ Auto-detection uncertain, using simple threshold")
+        # Use the method with most foreground pixels
+        best_mask = max(methods, key=lambda x: np.sum(x[1] > 0))[1]
+        best_name = "FALLBACK"
+    
+    print(f"✓ Using {best_name} threshold")
+    
+    # Minimal cleanup - NO morphology to preserve sharp corners
+    # Just remove tiny noise
+    contours, _ = cv2.findContours(best_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # Keep only significant contours
+        min_area = (h * w) * 0.01  # At least 1% of image
+        filtered_mask = np.zeros_like(best_mask)
+        
+        #Go through each detected blob. If it's big enough, keep it; otherwise, remove it
+        for cnt in contours:
+            if cv2.contourArea(cnt) > min_area:
+                cv2.drawContours(filtered_mask, [cnt], -1, 255, -1)
+        best_mask = filtered_mask
+    
+    coverage = np.sum(best_mask > 0) / (h * w) * 100
+    print(f"  Mask coverage: {coverage:.1f}%")
+    
+    return best_mask, rgb
+
+
+def create_proper_3d_extrusion(image_path, thickness=0.3, scale=2.0):
+    """
+    Properly extrude a 2D shape into 3D with SHARP POINTY CORNERS.
+    Works dynamically for ANY shape and color.
+    """
+   
+    print(f"\n{'='*60}")
+    print("DYNAMIC 3D EXTRUSION - SHARP CORNERS")
+    print(f"{'='*60}\n")
+    
+    print(f"📷 Loading: {Path(image_path).name}")
+    img = Image.open(image_path).convert("RGBA")
+    arr = np.array(img)
+    h, w = arr.shape[:2]
+    print(f"   Size: {w}x{h}")
+
+    # Detect mask dynamically
+    print("\n🎭 Detecting object...")
+    mask, rgb = detect_object_mask(arr, use_rembg=REMBG)
+    
+    if not np.any(mask):
+        raise ValueError("❌ No object detected in image!")
+
+    # Get object color dynamically
+    mask_bool = mask > 0
+    obj_pixels = rgb[mask_bool]
+    if len(obj_pixels) > 0:
+        obj_color = obj_pixels.mean(axis=0) / 255.0
+    else:
+        obj_color = np.array([0.5, 0.5, 0.5])
+    
+    print(f"   Color: RGB{tuple(int(c*255) for c in obj_color)}")
+
+    # Find contours with NO approximation (keeps ALL corners sharp)
+    print("\n🔷 Extracting shape...")
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+   
+    if not contours:
+        raise ValueError("❌ No contours found!")
+   
+    # Get the largest contour
+    main_contour = max(contours, key=cv2.contourArea)
+   
+    # ULTRA MINIMAL approximation - preserves sharp corners
+    perimeter = cv2.arcLength(main_contour, True)
+    # epsilon = 0.0001 * perimeter  # Extremely low - keeps corners VERY sharp
+
+    epsilon = 0.0005 * perimeter  # Balanced for circles/curves
+    simplified = cv2.approxPolyDP(main_contour, epsilon, True)
+   
+    # If still too many points, use slightly higher epsilon
+    if len(simplified) > 2000:
+        epsilon = 0.002 * perimeter
+        
+        # Using approxPolyDP with tiny epsilon means nearly the full contour is used, which can be large and expensive. But it preserves sharp geometry
+    #    cv2.approxPolyDP() is an OpenCV function that simplifies a contour by reducing the number of points
+        simplified = cv2.approxPolyDP(main_contour, epsilon, True)
+    
+    # Extract 2D points
+    points_2d = simplified.reshape(-1, 2).astype(np.float64)
+   
+    print(f"   Shape: {len(points_2d)} boundary points (sharp corners preserved)")
+
+    # Normalize points - perfectly balanced
+    def normalize_points_balanced(pts):
+        min_x, min_y = pts.min(axis=0)
+        max_x, max_y = pts.max(axis=0)
+        
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        
+        width = max_x - min_x
+        height = max_y - min_y
+        range_val = max(width, height)
+        
+        if range_val == 0:
+            range_val = 1.0
+       
+        normalized = np.zeros_like(pts, dtype=np.float64)
+        # Multiplication by scale for the final size adjustment
+        normalized[:, 0] = ((pts[:, 0] - center_x) / range_val) * scale
+        normalized[:, 1] = (-(pts[:, 1] - center_y) / range_val) * scale
+        
+        return normalized
+
+    points_2d_norm = normalize_points_balanced(points_2d)
+
+    # Triangulate interior
+    print("\n🔺 Triangulating interior...")
+   
+    # Sample interior points uniformly
+    filled_mask = np.zeros_like(mask)
+    cv2.drawContours(filled_mask, [main_contour], -1, 255, -1)
+   
+    ys, xs = np.where(filled_mask > 0)
+    
+    # Example
+            
+        # Let's say your contour is a simple square:
+
+        # (0,0)  (4,0)
+        # (0,4)  (4,4)
+
+        # Step 1 — Fill mask
+
+        # Interior pixels might be:
+
+        # (1,1), (1,2), (1,3)
+        # (2,1), (2,2), (2,3)
+        # (3,1), (3,2), (3,3)
+
+        # Step 2 — Randomly sample
+
+        # Assume we keep only these 4 interior points:
+
+        # (1,1), (1,3), (3,1), (3,3)
+
+        # Step 3 — Normalize
+
+        # (Not important for example — just shifts numbers.)
+
+        # Step 4 — Combine boundary + interior
+
+        # Boundary points:
+
+        # (0,0), (4,0), (4,4), (0,4)
+
+
+        # Interior points:
+
+        # (1,1), (1,3), (3,1), (3,3)
+
+
+        # All points:
+
+        # [(0,0),
+        #  (4,0),
+        #  (4,4),
+        #  (0,4),
+        #  (1,1),
+        #  (1,3),
+        #  (3,1),
+        #  (3,3)]
+
+        # Step 5 — Delaunay triangulation
+
+        # It will produce triangles from these 8 points, for example:
+
+        # Triangle 1: points [0,4,1]
+        # Triangle 2: points [1,4,5]
+        # Triangle 3: points [1,5,2]
+        # Triangle 4: points [2,5,7]
+        # Triangle 5: points [2,7,6]
+        # Triangle 6: points [6,3,0]
+            
+    
+    
+    #  300 Because using every pixel gives millions of points → triangulation becomes too slow
+    if len(xs) > 5000:
+        np.random.seed(42)
+        indices = np.random.choice(len(xs), 5000, replace=False)
+        xs, ys = xs[indices], ys[indices]
+   
+    interior_pts = np.column_stack([xs, ys]).astype(np.float64)
+    interior_pts_norm = normalize_points_balanced(interior_pts)
+   
+    # Combine boundary and interior
+    all_points_2d = np.vstack([points_2d_norm, interior_pts_norm[::3]])
+   
+    # Delaunay triangulation
+    try:
+        tri = Delaunay(all_points_2d)
+        face_indices = tri.simplices
+        print(f"   {len(face_indices)} triangles created")
+    except Exception as e:
+        print(f"⚠️ Delaunay failed: {e}, using fan triangulation")
+        centroid = points_2d_norm.mean(axis=0)
+        all_points_2d = np.vstack([points_2d_norm, [centroid]])
+        n = len(points_2d_norm)
+        face_indices = np.array([[n, i, (i+1) % n] for i in range(n)])
+
+    # Build 3D mesh
+    print("\n🏗️ Building 3D mesh...")
+    
+    n_points = len(all_points_2d)
+    n_boundary = len(points_2d_norm)
+   
+#    Thickness divided by 2 because if the thickness is 2 (1 from front face and 1 from back face)
+    # Front surface (z = +thickness/2)
+    front_vertices = np.column_stack([all_points_2d, np.full(n_points, thickness/2)])
+   
+    # Back surface (z = -thickness/2)
+    back_vertices = np.column_stack([all_points_2d, np.full(n_points, -thickness/2)])
+   
+    vertices = np.vstack([front_vertices, back_vertices])
+   
+    # Build faces
+    faces_front = face_indices.copy()
+    faces_back = face_indices[:, [0, 2, 1]] + n_points
+   
+    # Side faces - ONLY boundary points
+    faces_side = []
+    for i in range(n_boundary):
+        next_i = (i + 1) % n_boundary
+        v1_front = i
+        v2_front = next_i
+        v1_back = i + n_points
+        v2_back = next_i + n_points
+        
+        faces_side.append([v1_front, v2_front, v2_back])
+        faces_side.append([v1_front, v2_back, v1_back])
+   
+    faces = np.vstack([faces_front, faces_back, np.array(faces_side)])
+   
+    print(f"   {len(vertices):,} vertices, {len(faces):,} faces")
+
+    # Create mesh with opacity
+    print("\n🔧 Creating mesh...")
+    opacity = 200
+    color_rgba = np.append((obj_color * 255).astype(np.uint8), opacity)
+    colors = np.tile(color_rgba, (len(vertices), 1))
+   
+    mesh = trimesh.Trimesh(
+        vertices=vertices,
+        faces=faces,
+        vertex_colors=colors,
+        process=False
+    )
+
+    # Minimal post-processing - NO smoothing to keep sharp corners
+    print("\n🔨 Post-processing (preserving sharp corners)...")
+   
+    mesh.merge_vertices()
+    print(f"   After merge: {len(mesh.vertices)} vertices")
+   
+    mesh.remove_duplicate_faces()
+    mesh.remove_degenerate_faces()
+    mesh.update_faces(mesh.nondegenerate_faces())
+    print(f"   After cleanup: {len(mesh.faces)} faces")
+   
+    mesh.fill_holes()
+    mesh.fix_normals()
+    mesh.merge_vertices()
+    mesh.remove_unreferenced_vertices()
+   
+    if not mesh.is_watertight:
+        print("   Attempting repair...")
+        mesh.fill_holes()
+        mesh.merge_vertices()
+        
+        components = mesh.split(only_watertight=False)
+        if len(components) > 1:
+            mesh = max(components, key=lambda m: len(m.vertices))
+   
+    # NO SMOOTHING - keeps corners sharp!
+    
+    mesh.fix_normals()
+    mesh.fill_holes()
+    
+    # Reapply colors
+    mesh.visual.vertex_colors = np.tile(color_rgba, (len(mesh.vertices), 1))
+    
+    # Center mesh
+    mesh_center = mesh.vertices.mean(axis=0)
+    if np.linalg.norm(mesh_center) > 0.01:
+        mesh.vertices -= mesh_center
+
+    # Export
+    output = Path(image_path).with_suffix(".glb")
+    mesh.export(output)
+
+    print(f"\n{'='*60}")
+    print("✅ 3D Generation complete!")
+    print(f"{'='*60}")
+    print(f"📦 Output: {output.name}")
+    print(f"🎨 Color: RGB{tuple(int(c*255) for c in obj_color)}")
+    print(f"📊 Vertices: {len(mesh.vertices):,}")
+    print(f"📐 Faces: {len(mesh.faces):,}")
+    # print(f"🔒 Watertight: {'✓ YES' if mesh.is_watertight else '⚠ ALMOST'}")
+    # print(f"📏 Volume: {abs(mesh.volume):.4f}")
+    print(f"{'='*60}\n")
+    
+    # Automatically open in Windows 3D Viewer
+    try:
+        import os
+        import subprocess
+        print("🔍 Opening in 3D Viewer...")
+        os.startfile(str(output))
+    except Exception as e:
+        print(f"⚠️ Could not auto-open 3D viewer: {e}")
+   
+    return mesh
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Dynamic 3D extrusion with sharp corners for ANY shape",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("image", help="Path to your 2D image")
+    parser.add_argument("--thickness", type=float, default=0.3,
+                       help="Extrusion thickness (default: 0.3)")
+    parser.add_argument("--scale", type=float, default=2.0,
+                       help="Model scale (default: 2.0)")
+    args = parser.parse_args()
+
+    create_proper_3d_extrusion(args.image, args.thickness, args.scale)
